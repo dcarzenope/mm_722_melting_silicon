@@ -1,0 +1,81 @@
+clear
+# Settings
+variable        x equal 5
+variable        y equal 5
+variable        z equal 5
+
+variable        rho equal 2.33   # Silicon density in g/cm^3
+variable        t loop 1675 1695
+
+variable        p equal 200      # Correlation length
+variable        s equal 10       # Sample interval
+variable        d equal $p*$s    # Dump interval
+
+# Setup problem
+units           metal 
+atom_style      atomic
+
+lattice         diamond ${rho}
+region          box block 0 $x 0 $y 0 $z
+create_box      1 box
+create_atoms    1 box
+mass            1 28.0855       # Silicon atomic mass in atomic mass units
+
+velocity        all create $t 12345678 dist uniform
+
+pair_style      sw
+pair_coeff      * * Si.sw Si
+
+neighbor        2.0 bin
+neigh_modify    delay 0 every 1
+
+# 1st equilibration run
+
+fix             1 all nvt temp $t $t 0.001
+thermo          100
+run             1000
+unfix           1
+
+# thermal conductivity calculation
+
+reset_timestep  0
+
+compute         myKE all ke/atom
+compute         myPE all pe/atom
+compute         myStress all stress/atom NULL virial
+compute         flux all heat/flux myKE myPE myStress
+variable        Jx equal c_flux[1]/vol
+variable        Jy equal c_flux[2]/vol
+variable        Jz equal c_flux[3]/vol
+
+fix             1 all nve
+fix             JJ all ave/correlate $s $p $d &
+                c_flux[1] c_flux[2] c_flux[3] type auto &
+                file profile.$t.heatflux ave running
+
+variable        scale equal $s*dt/$t/$t/vol
+variable        k11 equal trap(f_JJ[3])*${scale}
+variable        k22 equal trap(f_JJ[4])*${scale}
+variable        k33 equal trap(f_JJ[5])*${scale}
+variable        kappa equal (v_k11+v_k22+v_k33)/3.0
+
+thermo          $d
+thermo_style    custom step temp v_Jx v_Jy v_Jz v_k11 v_k22 v_k33 v_kappa
+thermo_modify   colname v_Jx Jx colname v_Jy Jy colname v_Jz Jz &
+                colname v_k11 kappa_11 colname v_k22 kappa_22 &
+                colname v_k33 kappa_33 colname v_kappa kappa
+
+dump            2 all custom $d dump.$t.lammpstrj id type x y z vx vy vz
+dump_modify     2 sort id
+
+run             10000
+
+print           "Running average thermal conductivity for $t K: $(v_kappa:%.5f)"
+
+# Calculate RDF
+compute         RDF all rdf 100 1 1
+fix             rdf_all all ave/time 100 10 1000 c_RDF[*] file rdf.$t.out mode vector
+run             10000
+
+next		t
+jump 		silicon.in
